@@ -10,6 +10,7 @@ import { Type } from '@sinclair/typebox';
 import solanaRoutes from './connectors/solana';
 import orcaRoutes from './connectors/orca';
 import raydiumRoutes from './connectors/raydium';
+import meteoraRoutes from './connectors/meteora';
 
 export const asciiLogo = `
  _      __    ___   ___  
@@ -78,6 +79,7 @@ server.register(fastifySwaggerUi, {
 server.register(solanaRoutes);
 server.register(orcaRoutes);
 server.register(raydiumRoutes);
+server.register(meteoraRoutes);
 
 export const startServer = async (): Promise<void> => {
   try {
