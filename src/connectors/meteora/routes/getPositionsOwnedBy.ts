@@ -2,7 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { Type } from '@sinclair/typebox';
 import DLMM, { BinLiquidity, LbPosition } from '@meteora-ag/dlmm';
 import { MeteoraController } from '../meteora.controller';
-import { PublicKey } from '@solana/web3.js';
+import { Cluster, PublicKey } from '@solana/web3.js';
 
 interface PositionsOwnedByResponse {
   activeBin: BinLiquidity;
@@ -18,7 +18,9 @@ class PositionsOwnedController extends MeteoraController {
     const publicKey = address ? new PublicKey(address) : this.keypair.publicKey;
 
     try {
-      const dlmm = await DLMM.create(this.connection, new PublicKey(poolAddress));
+      const dlmm = await DLMM.create(this.connection, new PublicKey(poolAddress), {
+        cluster: this.network as Cluster,
+      });
       const { activeBin, userPositions } = await dlmm.getPositionsByUserAndLbPair(publicKey);
 
       return {

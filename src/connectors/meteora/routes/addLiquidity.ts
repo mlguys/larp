@@ -1,10 +1,12 @@
 import { BN } from '@coral-xyz/anchor';
 import { MeteoraController } from '../meteora.controller';
 import DLMM, { LbPosition, StrategyType } from '@meteora-ag/dlmm';
-import { sendAndConfirmTransaction } from '@solana/web3.js';
+import { Cluster, ComputeBudgetProgram, sendAndConfirmTransaction } from '@solana/web3.js';
 import { FastifyInstance } from 'fastify';
 import { MAX_ACTIVE_BIN_SLIPPAGE, PositionInfo } from '@meteora-ag/dlmm';
 import { Type } from '@sinclair/typebox';
+import { DecimalUtil } from '@orca-so/common-sdk';
+import Decimal from 'decimal.js';
 
 export const AddLiquidityResponse = Type.Object({
   signature: Type.String(),
@@ -56,11 +58,18 @@ class AddLiquidityController extends MeteoraController {
     // Get requirement data
     const maxBinId = matchingLbPosition.positionData.upperBinId;
     const minBinId = matchingLbPosition.positionData.lowerBinId;
-    const totalXAmount = new BN(baseTokenAmount);
-    const totalYAmount = new BN(quoteTokenAmount);
+
+    const totalXAmount = new BN(
+      DecimalUtil.toBN(new Decimal(baseTokenAmount), matchingPositionInfo.tokenX.decimal),
+    );
+    const totalYAmount = new BN(
+      DecimalUtil.toBN(new Decimal(quoteTokenAmount), matchingPositionInfo.tokenX.decimal),
+    );
 
     // Initialize DLMM pool
-    const dlmmPool = await DLMM.create(this.connection, matchingPositionInfo.publicKey);
+    const dlmmPool = await DLMM.create(this.connection, matchingPositionInfo.publicKey, {
+      cluster: this.network as Cluster,
+    });
 
     // Update pool state
     await dlmmPool.refetchStates();
@@ -70,6 +79,17 @@ class AddLiquidityController extends MeteoraController {
       tokenX: matchingLbPosition.positionData.totalXAmount.toString(),
       tokenY: matchingLbPosition.positionData.totalYAmount.toString(),
     };
+
+    // Get priority fees
+    const { result: priorityFeesEstimate } = await this.fetchEstimatePriorityFees({
+      last_n_blocks: 100,
+      account: matchingPositionInfo.publicKey.toBase58(),
+      endpoint: this.connection.rpcEndpoint,
+    });
+
+    const priorityFeeInstruction = ComputeBudgetProgram.setComputeUnitPrice({
+      microLamports: priorityFeesEstimate.per_compute_unit.high,
+    });
 
     // Add Liquidity to existing position
     const addLiquidityTx = await dlmmPool.addLiquidityByStrategy({
@@ -85,6 +105,8 @@ class AddLiquidityController extends MeteoraController {
       slippage: slippagePct ? slippagePct : MAX_ACTIVE_BIN_SLIPPAGE,
     });
 
+    addLiquidityTx.instructions.push(priorityFeeInstruction);
+
     // prepare return object
     const returnObject = {
       signature: '',
@@ -99,30 +121,67 @@ class AddLiquidityController extends MeteoraController {
     } as typeof AddLiquidityResponse.static;
 
     try {
-      const addLiquidityTxHash = await sendAndConfirmTransaction(this.connection, addLiquidityTx, [
-        this.keypair,
-      ]);
+      const addLiquidityTxHash = await sendAndConfirmTransaction(
+        this.connection,
+        addLiquidityTx,
+        [this.keypair],
+        { commitment: 'confirmed' },
+      );
       console.log('🚀 ~ addLiquidityTxHash:', addLiquidityTxHash);
       returnObject.signature = addLiquidityTxHash;
 
-      // Refresh the position data to get updated liquidity
-      await dlmmPool.refetchStates();
-      const positionsState = await dlmmPool.getPositionsByUserAndLbPair(this.keypair.publicKey);
+      // Wait for pool to get updated data
+      let updatedPosition;
+      let retryCount = 0;
+      const maxRetries = 10;
+      do {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
 
-      // Find the updated position in positionsState
-      const updatedPosition = positionsState.userPositions.find((position) =>
-        position.publicKey.equals(matchingLbPosition.publicKey),
+        // Refresh the position data to get updated liquidity
+        await dlmmPool.refetchStates();
+        let positionsState = await dlmmPool.getPositionsByUserAndLbPair(this.keypair.publicKey);
+
+        // Find the updated position in positionsState
+        updatedPosition = positionsState.userPositions.find((position) =>
+          position.publicKey.equals(matchingLbPosition.publicKey),
+        );
+
+        if (!updatedPosition) {
+          throw new Error('Updated position not found after adding liquidity');
+        }
+
+        retryCount++;
+      } while (
+        retryCount < maxRetries &&
+        updatedPosition.positionData.totalXAmount.toString() === beforeLiquidity.tokenX &&
+        updatedPosition.positionData.totalYAmount.toString() === beforeLiquidity.tokenY
       );
 
-      if (!updatedPosition) {
-        throw new Error('Updated position not found after adding liquidity');
+      if (retryCount === maxRetries) {
+        console.log('Max retries reached');
       }
 
       // Update the return object with the new liquidity amounts
       returnObject.liquidityAfter = {
-        tokenX: updatedPosition.positionData.totalXAmount.toString(),
-        tokenY: updatedPosition.positionData.totalYAmount.toString(),
+        tokenX: DecimalUtil.adjustDecimals(
+          new Decimal(updatedPosition.positionData.totalXAmount.toString()),
+          matchingPositionInfo.tokenX.decimal,
+        ).toString(),
+        tokenY: DecimalUtil.adjustDecimals(
+          new Decimal(updatedPosition.positionData.totalYAmount.toString()),
+          matchingPositionInfo.tokenX.decimal,
+        ).toString(),
       };
+
+      returnObject.liquidityBefore.tokenX = DecimalUtil.adjustDecimals(
+        new Decimal(returnObject.liquidityBefore.tokenX),
+        matchingPositionInfo.tokenX.decimal,
+      ).toString();
+
+      returnObject.liquidityBefore.tokenY = DecimalUtil.adjustDecimals(
+        new Decimal(returnObject.liquidityBefore.tokenY),
+        matchingPositionInfo.tokenY.decimal,
+      ).toString();
 
       console.log('Liquidity added successfully');
       console.log('Before:', returnObject.liquidityBefore);
@@ -160,6 +219,10 @@ export default function addLiquidityRoute(fastify: FastifyInstance, folderName: 
         quoteTokenAmount: number;
         slippagePct?: number;
       };
+      console.log('Debug - positionAddress:', positionAddress);
+      console.log('Debug - baseTokenAmount:', baseTokenAmount);
+      console.log('Debug - quoteTokenAmount:', quoteTokenAmount);
+      console.log('Debug - slippagePct:', slippagePct);
       fastify.log.info(`Adding liquidity to Meteora position: ${positionAddress}`);
       try {
         const result = await controller.addLiquidity(

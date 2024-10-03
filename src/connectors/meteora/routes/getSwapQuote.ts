@@ -1,11 +1,11 @@
 import { FastifyInstance } from 'fastify';
 import { Type } from '@sinclair/typebox';
-import { DecimalUtil } from "@orca-so/common-sdk";
+import { DecimalUtil } from '@orca-so/common-sdk';
 import DLMM from '@meteora-ag/dlmm';
 import { MeteoraController } from '../meteora.controller';
 import { SolanaController } from '../../solana/solana.controller';
-import BN from "bn.js";
-import { PublicKey } from '@solana/web3.js';
+import BN from 'bn.js';
+import { Cluster, PublicKey } from '@solana/web3.js';
 import Decimal from 'decimal.js';
 
 class GetSwapQuoteController extends MeteoraController {
@@ -14,7 +14,7 @@ class GetSwapQuoteController extends MeteoraController {
     outputTokenSymbol: string,
     amount: number,
     poolAddress: string,
-    slippageBps?: number
+    slippageBps?: number,
   ): Promise<{
     estimatedAmountIn: string;
     estimatedAmountOut: string;
@@ -28,9 +28,11 @@ class GetSwapQuoteController extends MeteoraController {
       throw new Error('Invalid token symbols');
     }
 
-    const dlmmPool = await DLMM.create(this.connection, new PublicKey(poolAddress));
+    const dlmmPool = await DLMM.create(this.connection, new PublicKey(poolAddress), {
+      cluster: this.network as Cluster,
+    });
     await dlmmPool.refetchStates(); // Add this line to ensure we have the latest pool state
-    
+
     const swapAmount = new BN(DecimalUtil.toBN(new Decimal(amount), inputToken.decimals));
     const swapForY = inputToken.address === dlmmPool.tokenX.publicKey.toBase58();
 
@@ -41,7 +43,10 @@ class GetSwapQuoteController extends MeteoraController {
     const swapQuote = await dlmmPool.swapQuote(swapAmount, swapForY, slippage, binArrays);
 
     return {
-      estimatedAmountIn: DecimalUtil.fromBN(swapQuote.consumedInAmount, inputToken.decimals).toString(),
+      estimatedAmountIn: DecimalUtil.fromBN(
+        swapQuote.consumedInAmount,
+        inputToken.decimals,
+      ).toString(),
       estimatedAmountOut: DecimalUtil.fromBN(swapQuote.outAmount, outputToken.decimals).toString(),
       minOutAmount: DecimalUtil.fromBN(swapQuote.minOutAmount, outputToken.decimals).toString(),
     };
@@ -67,20 +72,29 @@ export default function getSwapQuoteRoute(fastify: FastifyInstance, folderName: 
           estimatedAmountIn: Type.String(),
           estimatedAmountOut: Type.String(),
           minOutAmount: Type.String(),
-        })
-      }
+        }),
+      },
     },
     handler: async (request) => {
-      const { inputTokenSymbol, outputTokenSymbol, amount, poolAddress, slippageBps } = request.query as {
-        inputTokenSymbol: string;
-        outputTokenSymbol: string;
-        amount: number;
-        poolAddress: string;
-        slippageBps?: number;
-      };
-      fastify.log.info(`Getting Meteora swap quote for ${inputTokenSymbol} to ${outputTokenSymbol}`);
-      const quote = await controller.getSwapQuote(inputTokenSymbol, outputTokenSymbol, amount, poolAddress, slippageBps);
+      const { inputTokenSymbol, outputTokenSymbol, amount, poolAddress, slippageBps } =
+        request.query as {
+          inputTokenSymbol: string;
+          outputTokenSymbol: string;
+          amount: number;
+          poolAddress: string;
+          slippageBps?: number;
+        };
+      fastify.log.info(
+        `Getting Meteora swap quote for ${inputTokenSymbol} to ${outputTokenSymbol}`,
+      );
+      const quote = await controller.getSwapQuote(
+        inputTokenSymbol,
+        outputTokenSymbol,
+        amount,
+        poolAddress,
+        slippageBps,
+      );
       return quote;
-    }
+    },
   });
 }

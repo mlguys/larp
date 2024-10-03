@@ -1,10 +1,11 @@
 import { FastifyInstance } from 'fastify';
 import { Type } from '@sinclair/typebox';
-import { TypeCompiler } from '@sinclair/typebox/compiler'
+import { TypeCompiler } from '@sinclair/typebox/compiler';
 import DLMM, { LbPosition, PositionInfo } from '@meteora-ag/dlmm';
 import { MeteoraController } from '../meteora.controller';
-import { DecimalUtil } from "@orca-so/common-sdk";
-import Decimal from "decimal.js";
+import { DecimalUtil } from '@orca-so/common-sdk';
+import Decimal from 'decimal.js';
+import { Cluster } from '@solana/web3.js';
 
 export const QuoteFeesResponse = Type.Object({
   tokenX: Type.Object({
@@ -20,9 +21,7 @@ export const QuoteFeesResponse = Type.Object({
 class GetFeesQuoteController extends MeteoraController {
   private feesQuoteValidator = TypeCompiler.Compile(QuoteFeesResponse);
 
-  async getFeesQuote(
-    positionAddress: string
-  ): Promise<string> {
+  async getFeesQuote(positionAddress: string): Promise<string> {
     // Find all positions by users
     const allPositions = await DLMM.getAllLbPairPositionsByUser(
       this.connection,
@@ -48,7 +47,9 @@ class GetFeesQuoteController extends MeteoraController {
     }
 
     // Initialize DLMM pool
-    const dlmmPool = await DLMM.create(this.connection, matchingPositionInfo.publicKey);
+    const dlmmPool = await DLMM.create(this.connection, matchingPositionInfo.publicKey, {
+      cluster: this.network as Cluster,
+    });
 
     // Update pool state
     await dlmmPool.refetchStates();
@@ -74,12 +75,18 @@ class GetFeesQuoteController extends MeteoraController {
     const feesQuoteResponse = {
       tokenX: {
         address: tokenX.publicKey.toBase58(),
-        amount: DecimalUtil.adjustDecimals(new Decimal(tokenXClaimableFees.toString()), tokenX.decimal).toString()
+        amount: DecimalUtil.adjustDecimals(
+          new Decimal(tokenXClaimableFees.toString()),
+          tokenX.decimal,
+        ).toString(),
       },
       tokenY: {
         address: tokenY.publicKey.toBase58(),
-        amount: DecimalUtil.adjustDecimals(new Decimal(tokenYClaimableFees.toString()), tokenY.decimal).toString()
-      }
+        amount: DecimalUtil.adjustDecimals(
+          new Decimal(tokenYClaimableFees.toString()),
+          tokenY.decimal,
+        ).toString(),
+      },
     };
 
     // Validate the feeQuote object against the schema
@@ -102,7 +109,7 @@ export default function getFeesQuoteRoute(fastify: FastifyInstance, folderName: 
         positionAddress: Type.String(),
       }),
       response: {
-        200: QuoteFeesResponse
+        200: QuoteFeesResponse,
       },
     },
     handler: async (request) => {
@@ -110,6 +117,6 @@ export default function getFeesQuoteRoute(fastify: FastifyInstance, folderName: 
       fastify.log.info(`Getting fees quote for Meteora position: ${positionAddress}`);
       const result = await controller.getFeesQuote(positionAddress);
       return JSON.parse(result);
-    }
+    },
   });
 }

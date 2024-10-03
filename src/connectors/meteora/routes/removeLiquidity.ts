@@ -1,27 +1,33 @@
 import { BN } from '@coral-xyz/anchor';
 import { MeteoraController } from '../meteora.controller';
 import DLMM, { LbPosition, PositionInfo } from '@meteora-ag/dlmm';
-import { sendAndConfirmTransaction } from '@solana/web3.js';
+import { Cluster, ComputeBudgetProgram, sendAndConfirmTransaction } from '@solana/web3.js';
 import { FastifyInstance } from 'fastify';
 import { Type } from '@sinclair/typebox';
+import { DecimalUtil } from '@orca-so/common-sdk';
+import Decimal from 'decimal.js';
 
 export const RemoveLiquidityResponse = Type.Object({
   signature: Type.String(),
   liquidityBefore: Type.Object({
     tokenX: Type.String(),
-    tokenY: Type.String()
+    tokenY: Type.String(),
   }),
   liquidityAfter: Type.Object({
     tokenX: Type.String(),
-    tokenY: Type.String()
-  })
+    tokenY: Type.String(),
+  }),
 });
 
 class RemoveLiquidityController extends MeteoraController {
   async removeLiquidity(
     positionAddress: string,
     percentageToRemove: number,
-  ): Promise<{ signature: string; liquidityBefore: { tokenX: string; tokenY: string }; liquidityAfter: { tokenX: string; tokenY: string } }> {
+  ): Promise<{
+    signature: string;
+    liquidityBefore: { tokenX: string; tokenY: string };
+    liquidityAfter: { tokenX: string; tokenY: string };
+  }> {
     // Find all positions by users
     const allPositions = await DLMM.getAllLbPairPositionsByUser(
       this.connection,
@@ -47,7 +53,9 @@ class RemoveLiquidityController extends MeteoraController {
     }
 
     // Initialize DLMM pool
-    const dlmmPool = await DLMM.create(this.connection, matchingPositionInfo.publicKey);
+    const dlmmPool = await DLMM.create(this.connection, matchingPositionInfo.publicKey, {
+      cluster: this.network as Cluster,
+    });
 
     // Update pool state
     await dlmmPool.refetchStates();
@@ -55,12 +63,23 @@ class RemoveLiquidityController extends MeteoraController {
     // Record before liquidity
     const beforeLiquidity = {
       tokenX: matchingLbPosition.positionData.totalXAmount.toString(),
-      tokenY: matchingLbPosition.positionData.totalYAmount.toString()
+      tokenY: matchingLbPosition.positionData.totalYAmount.toString(),
     };
 
     // Calculate the amount of liquidity to remove
-    const binIdsToRemove = matchingLbPosition.positionData.positionBinData.map(bin => bin.binId);
+    const binIdsToRemove = matchingLbPosition.positionData.positionBinData.map((bin) => bin.binId);
     const bps = new BN(percentageToRemove * 100);
+
+    // Get priority fees
+    const { result: priorityFeesEstimate } = await this.fetchEstimatePriorityFees({
+      last_n_blocks: 100,
+      account: matchingPositionInfo.publicKey.toBase58(),
+      endpoint: this.connection.rpcEndpoint,
+    });
+
+    const priorityFeeInstruction = ComputeBudgetProgram.setComputeUnitPrice({
+      microLamports: priorityFeesEstimate.per_compute_unit.high,
+    });
 
     // Remove Liquidity
     const removeLiquidityTx = await dlmmPool.removeLiquidity({
@@ -72,20 +91,24 @@ class RemoveLiquidityController extends MeteoraController {
     });
 
     if (Array.isArray(removeLiquidityTx)) {
-      throw new Error('Unexpected array of transactions. Expected a single transaction for removing liquidity.');
+      throw new Error(
+        'Unexpected array of transactions. Expected a single transaction for removing liquidity.',
+      );
     }
+
+    removeLiquidityTx.instructions.push(priorityFeeInstruction);
 
     // prepare return object
     const returnObject = {
       signature: '',
       liquidityBefore: {
         tokenX: beforeLiquidity.tokenX,
-        tokenY: beforeLiquidity.tokenY
+        tokenY: beforeLiquidity.tokenY,
       },
       liquidityAfter: {
         tokenX: '',
-        tokenY: ''
-      }
+        tokenY: '',
+      },
     } as typeof RemoveLiquidityResponse.static;
 
     try {
@@ -93,31 +116,63 @@ class RemoveLiquidityController extends MeteoraController {
         this.connection,
         removeLiquidityTx,
         [this.keypair],
-        { skipPreflight: false, preflightCommitment: "confirmed" }
+        { skipPreflight: false, preflightCommitment: 'confirmed', commitment: 'confirmed' },
       );
       console.log('🚀 ~ removeLiquidityTxHash:', removeLiquidityTxHash);
       returnObject.signature = removeLiquidityTxHash;
 
-      // Refresh the position data to get updated liquidity
-      await dlmmPool.refetchStates();
-      const positionsState = await dlmmPool.getPositionsByUserAndLbPair(
-        this.keypair.publicKey
+      // Wait for pool to get updated data
+      let updatedPosition;
+      let retryCount = 0;
+      const maxRetries = 10;
+      do {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+
+        // Refresh the position data to get updated liquidity
+        await dlmmPool.refetchStates();
+        let positionsState = await dlmmPool.getPositionsByUserAndLbPair(this.keypair.publicKey);
+
+        // Find the updated position in positionsState
+        updatedPosition = positionsState.userPositions.find((position) =>
+          position.publicKey.equals(matchingLbPosition.publicKey),
+        );
+
+        if (!updatedPosition) {
+          throw new Error('Updated position not found after adding liquidity');
+        }
+
+        retryCount++;
+      } while (
+        retryCount < maxRetries &&
+        updatedPosition.positionData.totalXAmount.toString() === beforeLiquidity.tokenX &&
+        updatedPosition.positionData.totalYAmount.toString() === beforeLiquidity.tokenY
       );
 
-      // Find the updated position in positionsState
-      const updatedPosition = positionsState.userPositions.find(position => 
-        position.publicKey.equals(matchingLbPosition.publicKey)
-      );
-
-      if (!updatedPosition) {
-        throw new Error('Updated position not found after removing liquidity');
+      if (retryCount === maxRetries) {
+        console.log('Max retries reached');
       }
 
       // Update the return object with the new liquidity amounts
       returnObject.liquidityAfter = {
-        tokenX: updatedPosition.positionData.totalXAmount.toString(),
-        tokenY: updatedPosition.positionData.totalYAmount.toString()
+        tokenX: DecimalUtil.adjustDecimals(
+          new Decimal(updatedPosition.positionData.totalXAmount.toString()),
+          matchingPositionInfo.tokenX.decimal,
+        ).toString(),
+        tokenY: DecimalUtil.adjustDecimals(
+          new Decimal(updatedPosition.positionData.totalYAmount.toString()),
+          matchingPositionInfo.tokenX.decimal,
+        ).toString(),
       };
+
+      returnObject.liquidityBefore.tokenX = DecimalUtil.adjustDecimals(
+        new Decimal(returnObject.liquidityBefore.tokenX),
+        matchingPositionInfo.tokenX.decimal,
+      ).toString();
+
+      returnObject.liquidityBefore.tokenY = DecimalUtil.adjustDecimals(
+        new Decimal(returnObject.liquidityBefore.tokenY),
+        matchingPositionInfo.tokenY.decimal,
+      ).toString();
 
       console.log('Liquidity removed successfully');
       console.log('Before:', returnObject.liquidityBefore);
@@ -143,8 +198,8 @@ export default function removeLiquidityRoute(fastify: FastifyInstance, folderNam
         percentageToRemove: Type.Number({ minimum: 0, maximum: 100, default: 50 }),
       }),
       response: {
-        200: RemoveLiquidityResponse
-      }
+        200: RemoveLiquidityResponse,
+      },
     },
     handler: async (request, reply) => {
       const { positionAddress, percentageToRemove } = request.body as {
@@ -153,15 +208,12 @@ export default function removeLiquidityRoute(fastify: FastifyInstance, folderNam
       };
       fastify.log.info(`Removing liquidity from Meteora position: ${positionAddress}`);
       try {
-        const result = await controller.removeLiquidity(
-          positionAddress,
-          percentageToRemove,
-        );
+        const result = await controller.removeLiquidity(positionAddress, percentageToRemove);
         return reply.send(result);
       } catch (error) {
         fastify.log.error(error);
         return reply.status(500).send({ error: 'Internal Server Error' });
       }
-    }
+    },
   });
 }

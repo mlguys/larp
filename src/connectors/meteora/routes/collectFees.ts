@@ -1,9 +1,9 @@
 import { FastifyInstance } from 'fastify';
 import { Type } from '@sinclair/typebox';
-import { TypeCompiler } from '@sinclair/typebox/compiler'
+import { TypeCompiler } from '@sinclair/typebox/compiler';
 import DLMM, { LbPosition, PositionInfo } from '@meteora-ag/dlmm';
 import { MeteoraController } from '../meteora.controller';
-import { sendAndConfirmTransaction } from '@solana/web3.js';
+import { Cluster, ComputeBudgetProgram, sendAndConfirmTransaction } from '@solana/web3.js';
 
 const CollectFeesResponse = Type.Object({
   signature: Type.String(),
@@ -38,10 +38,23 @@ class CollectFeesController extends MeteoraController {
     }
 
     // Initialize DLMM pool
-    const dlmmPool = await DLMM.create(this.connection, matchingPositionInfo.publicKey);
+    const dlmmPool = await DLMM.create(this.connection, matchingPositionInfo.publicKey, {
+      cluster: this.network as Cluster,
+    });
 
     // Update pool state
     await dlmmPool.refetchStates();
+
+    // Get priority fees
+    const { result: priorityFeesEstimate } = await this.fetchEstimatePriorityFees({
+      last_n_blocks: 100,
+      account: matchingPositionInfo.publicKey.toBase58(),
+      endpoint: this.connection.rpcEndpoint,
+    });
+
+    const priorityFeeInstruction = ComputeBudgetProgram.setComputeUnitPrice({
+      microLamports: priorityFeesEstimate.per_compute_unit.high,
+    });
 
     // Claim swap fees
     const claimSwapFeeTx = await dlmmPool.claimSwapFee({
@@ -49,14 +62,15 @@ class CollectFeesController extends MeteoraController {
       position: matchingLbPosition,
     });
 
+    claimSwapFeeTx.instructions.push(priorityFeeInstruction);
+
     let signature: string;
     try {
-      signature = await sendAndConfirmTransaction(
-        this.connection,
-        claimSwapFeeTx,
-        [this.keypair],
-        { skipPreflight: false, preflightCommitment: "confirmed" }
-      );
+      signature = await sendAndConfirmTransaction(this.connection, claimSwapFeeTx, [this.keypair], {
+        skipPreflight: false,
+        preflightCommitment: 'confirmed',
+        commitment: 'confirmed',
+      });
       console.log('🚀 ~ claimSwapFeeTxHash:', signature);
       console.log('Fees collected successfully');
     } catch (error) {
@@ -86,7 +100,7 @@ export default function collectFeesRoute(fastify: FastifyInstance, folderName: s
         positionAddress: Type.String(),
       }),
       response: {
-        200: CollectFeesResponse
+        200: CollectFeesResponse,
       },
     },
     handler: async (request) => {
@@ -94,6 +108,6 @@ export default function collectFeesRoute(fastify: FastifyInstance, folderName: s
       fastify.log.info(`Collecting fees for Meteora position: ${positionAddress}`);
       const result = await controller.collectFees(positionAddress);
       return JSON.parse(result);
-    }
+    },
   });
 }
