@@ -53,12 +53,6 @@ export class GetBalanceController extends SolanaController {
       { programId: TOKEN_PROGRAM_ID },
     );
 
-    // Get the balance in lamports
-    const balanceLamports = await this.connection.getBalance(publicKey);
-
-    // Convert lamports to SOL
-    const balanceSOL = balanceLamports / 1_000_000_000;
-
     // loop through all the token accounts and fetch the requested tokens
     for (const value of accounts.value) {
       const parsedTokenAccount = unpackAccount(value.pubkey, value.account);
@@ -74,26 +68,6 @@ export class GetBalanceController extends SolanaController {
         mint: mint.toBase58(),
         name: tokenDef.name,
         uiAmount: uiAmount.toString(),
-      });
-    }
-
-    // Check if SOL is already in the tokenAccounts
-    const solIndex = tokenAccounts.findIndex((token) => token.name === 'SOL');
-
-    if (solIndex !== -1) {
-      // If SOL is found, update its uiAmount by adding balanceSOL
-      const existingSol = tokenAccounts[solIndex];
-      const updatedUiAmount = parseFloat(existingSol.uiAmount) + balanceSOL;
-      tokenAccounts[solIndex] = {
-        ...existingSol,
-        uiAmount: updatedUiAmount.toString(),
-      };
-    } else {
-      // If SOL is not found, add it to the tokenAccounts
-      tokenAccounts.push({
-        mint: 'So11111111111111111111111111111111111111112', // Assuming 'SOL' is used as the mint identifier for native SOL
-        name: 'SOL',
-        uiAmount: balanceSOL.toString(),
       });
     }
 
