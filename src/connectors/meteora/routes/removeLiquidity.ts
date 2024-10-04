@@ -144,8 +144,14 @@ class RemoveLiquidityController extends MeteoraController {
         retryCount++;
       } while (
         retryCount < maxRetries &&
-        updatedPosition.positionData.totalXAmount.toString() === beforeLiquidity.tokenX &&
-        updatedPosition.positionData.totalYAmount.toString() === beforeLiquidity.tokenY
+        Math.abs(
+          parseFloat(updatedPosition.positionData.totalXAmount.toString()) -
+            parseFloat(beforeLiquidity.tokenX),
+        ) < 1e-9 &&
+        Math.abs(
+          parseFloat(updatedPosition.positionData.totalYAmount.toString()) -
+            parseFloat(beforeLiquidity.tokenY),
+        ) < 1e-9
       );
 
       if (retryCount === maxRetries) {

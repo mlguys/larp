@@ -26,6 +26,8 @@ class ExecuteSwapController extends MeteoraController {
     inputTokenAfter: string;
     outputTokenBefore: string;
     outputTokenAfter: string;
+    totalInputSwapped: string;
+    totalOutputSwapped: string;
   }> {
     const solanaController = new SolanaController();
     const inputToken = await solanaController.getTokenBySymbol(inputTokenSymbol);
@@ -48,14 +50,14 @@ class ExecuteSwapController extends MeteoraController {
     const swapQuote = await dlmmPool.swapQuote(swapAmount, swapForY, slippage, binArrays);
 
     const balanceController = new GetBalanceController();
-    const getBalance = async (tokenAddress: string) => {
+    const getBalance = async (tokenSymbol: string) => {
       const balances = JSON.parse(await balanceController.getBalance());
-      const tokenBalance = balances.find((b) => b.mint === tokenAddress);
+      const tokenBalance = balances.find((b) => b.name === tokenSymbol);
       return tokenBalance ? tokenBalance.uiAmount : '0';
     };
 
-    const inputTokenBefore = await getBalance(inputToken.address);
-    const outputTokenBefore = await getBalance(outputToken.address);
+    const inputTokenBefore = await getBalance(inputToken.symbol);
+    const outputTokenBefore = await getBalance(outputToken.symbol);
 
     const { result: priorityFeesEstimate } = await this.fetchEstimatePriorityFees({
       last_n_blocks: 100,
@@ -84,8 +86,26 @@ class ExecuteSwapController extends MeteoraController {
       maxRetries: 3,
     });
 
-    const inputTokenAfter = await getBalance(inputToken.address);
-    const outputTokenAfter = await getBalance(outputToken.address);
+    const maxRetries = 10;
+    let retries = 0;
+    let inputTokenAfter, outputTokenAfter;
+
+    do {
+      inputTokenAfter = await getBalance(inputToken.symbol);
+      outputTokenAfter = await getBalance(outputToken.symbol);
+
+      if (inputTokenBefore !== inputTokenAfter || outputTokenBefore !== outputTokenAfter) {
+        break;
+      }
+
+      retries++;
+      if (retries < maxRetries) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    } while (retries < maxRetries);
+
+    const totalInputSwapped = parseFloat(inputTokenBefore) - parseFloat(inputTokenAfter);
+    const totalOutputSwapped = parseFloat(outputTokenAfter) - parseFloat(outputTokenBefore);
 
     return {
       signature,
@@ -93,6 +113,8 @@ class ExecuteSwapController extends MeteoraController {
       inputTokenAfter: `${inputTokenSymbol} (after swap): ${inputTokenAfter}`,
       outputTokenBefore: `${outputTokenSymbol} (before swap): ${outputTokenBefore}`,
       outputTokenAfter: `${outputTokenSymbol} (after swap): ${outputTokenAfter}`,
+      totalInputSwapped: `${inputTokenSymbol} swapped: ${totalInputSwapped}`,
+      totalOutputSwapped: `${outputTokenSymbol} swapped: ${totalOutputSwapped}`,
     };
   }
 }
@@ -124,6 +146,8 @@ export default function executeSwapRoute(fastify: FastifyInstance, folderName: s
           inputTokenAfter: Type.String(),
           outputTokenBefore: Type.String(),
           outputTokenAfter: Type.String(),
+          totalInputSwapped: Type.String(),
+          totalOutputSwapped: Type.String(),
         }),
       },
     },

@@ -1,12 +1,14 @@
 import { FastifyInstance } from 'fastify';
 import { Type } from '@sinclair/typebox';
-import DLMM, { BinLiquidity, LbPosition } from '@meteora-ag/dlmm';
+import DLMM, { BinLiquidity } from '@meteora-ag/dlmm';
 import { MeteoraController } from '../meteora.controller';
 import { Cluster, PublicKey } from '@solana/web3.js';
+import { DecimalUtil } from '@orca-so/common-sdk';
+import Decimal from 'decimal.js';
 
 interface PositionsOwnedByResponse {
   activeBin: BinLiquidity;
-  userPositions: Array<LbPosition>;
+  userPositions: Array<any>;
 }
 
 class PositionsOwnedController extends MeteoraController {
@@ -21,11 +23,45 @@ class PositionsOwnedController extends MeteoraController {
       const dlmm = await DLMM.create(this.connection, new PublicKey(poolAddress), {
         cluster: this.network as Cluster,
       });
+
       const { activeBin, userPositions } = await dlmm.getPositionsByUserAndLbPair(publicKey);
+
+      const adjustedUserPositions = userPositions.map((position) => {
+        const adjustedTotalXAmount = DecimalUtil.adjustDecimals(
+          new Decimal(position.positionData.totalXAmount.toString()),
+          dlmm.tokenX.decimal,
+        ).toString();
+
+        const adjustedTotalYAmount = DecimalUtil.adjustDecimals(
+          new Decimal(position.positionData.totalYAmount.toString()),
+          dlmm.tokenY.decimal,
+        ).toString();
+
+        const adjustedFeeX = DecimalUtil.fromBN(
+          position.positionData.feeX,
+          dlmm.tokenX.decimal,
+        ).toString();
+
+        const adjustedFeeY = DecimalUtil.fromBN(
+          position.positionData.feeY,
+          dlmm.tokenY.decimal,
+        ).toString();
+
+        return {
+          ...position,
+          positionData: {
+            ...position.positionData,
+            totalXAmount: adjustedTotalXAmount,
+            totalYAmount: adjustedTotalYAmount,
+            feeX: adjustedFeeX,
+            feeY: adjustedFeeY,
+          },
+        };
+      });
 
       return {
         activeBin,
-        userPositions,
+        userPositions: adjustedUserPositions,
       };
     } catch (error) {
       console.error('Error fetching user positions:', error);
