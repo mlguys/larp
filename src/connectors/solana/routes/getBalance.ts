@@ -1,10 +1,10 @@
 import { FastifyInstance } from 'fastify';
 import { Type } from '@sinclair/typebox';
-import { TypeCompiler } from '@sinclair/typebox/compiler'
-import { PublicKey, Connection } from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID, unpackAccount } from "@solana/spl-token";
-import { DecimalUtil } from "@orca-so/common-sdk";
-import BN from "bn.js";
+import { TypeCompiler } from '@sinclair/typebox/compiler';
+import { PublicKey } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID, unpackAccount } from '@solana/spl-token';
+import { DecimalUtil } from '@orca-so/common-sdk';
+import BN from 'bn.js';
 import {
   SolanaController,
   SolanaAddressSchema,
@@ -12,11 +12,13 @@ import {
 } from '../solana.controller';
 
 // Update the BalanceResponse schema
-const BalanceResponse = Type.Array(Type.Object({
-  mint: Type.String(),
-  name: Type.String(),
-  uiAmount: Type.String(),
-}));
+const BalanceResponse = Type.Array(
+  Type.Object({
+    mint: Type.String(),
+    name: Type.String(),
+    uiAmount: Type.String(),
+  }),
+);
 
 export class GetBalanceController extends SolanaController {
   private balanceResponseValidator = TypeCompiler.Compile(BalanceResponse);
@@ -27,11 +29,11 @@ export class GetBalanceController extends SolanaController {
     const tokenAccounts = [];
 
     // Fetch SOL balance only if symbols is undefined or includes "SOL"
-    if (!symbols || symbols.includes("SOL")) {
+    if (!symbols || symbols.includes('SOL')) {
       const solBalance = await this.connection.getBalance(publicKey);
       tokenAccounts.push({
-        mint: "SOL", // Use "SOL" as the mint address for native SOL
-        name: "SOL",
+        mint: 'SOL', // Use "SOL" as the mint address for native SOL
+        name: 'SOL',
         uiAmount: (solBalance / 1e9).toString(), // Convert lamports to SOL
       });
     }
@@ -48,7 +50,7 @@ export class GetBalanceController extends SolanaController {
     // get all token accounts for the provided address
     const accounts = await this.connection.getTokenAccountsByOwner(
       publicKey, // Use the provided address
-      { programId: TOKEN_PROGRAM_ID }
+      { programId: TOKEN_PROGRAM_ID },
     );
 
     // loop through all the token accounts and fetch the requested tokens
@@ -80,35 +82,36 @@ export class GetBalanceController extends SolanaController {
 }
 
 export default function getBalanceRoute(fastify: FastifyInstance, folderName: string) {
-    const controller = new GetBalanceController();
-  
-    fastify.get(`/${folderName}/balance`, {
-      schema: {
-        tags: [folderName],
-        description: 'Get token balances for the specified wallet address or the user\'s wallet if not provided',
-        querystring: Type.Object({
-          address: Type.Optional(SolanaAddressSchema),
-          symbols: Type.Optional(Type.Array(Type.String(), { default: ["SOL"] }))
-        }),
-        response: {
-          200: BalanceResponse,
-          400: BadRequestResponseSchema
-        }
+  const controller = new GetBalanceController();
+
+  fastify.get(`/${folderName}/balance`, {
+    schema: {
+      tags: [folderName],
+      description:
+        "Get token balances for the specified wallet address or the user's wallet if not provided",
+      querystring: Type.Object({
+        address: Type.Optional(SolanaAddressSchema),
+        symbols: Type.Optional(Type.Array(Type.String(), { default: ['SOL'] })),
+      }),
+      response: {
+        200: BalanceResponse,
+        400: BadRequestResponseSchema,
       },
-      handler: async (request, reply) => {
-        const { address, symbols } = request.query as { address?: string; symbols?: string[] };
-        fastify.log.info(`Getting token balances for address: ${address || 'user wallet'}`);
-        try {
-          const result = await controller.getBalance(address, symbols);
-          return result;
-        } catch (error) {
-          fastify.log.error(error);
-          reply.status(500).send({
-            statusCode: 500,
-            error: 'Internal Server Error',
-            message: 'An error occurred while fetching token balances'
-          });
-        }
+    },
+    handler: async (request, reply) => {
+      const { address, symbols } = request.query as { address?: string; symbols?: string[] };
+      fastify.log.info(`Getting token balances for address: ${address || 'user wallet'}`);
+      try {
+        const result = await controller.getBalance(address, symbols);
+        return JSON.parse(result);
+      } catch (error) {
+        fastify.log.error(error);
+        reply.status(500).send({
+          statusCode: 500,
+          error: 'Internal Server Error',
+          message: 'An error occurred while fetching token balances',
+        });
       }
+    },
   });
 }

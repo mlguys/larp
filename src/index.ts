@@ -18,7 +18,5 @@ if (process.env.START_SERVER === 'true') {
     process.exit(1);
   });
 } else {
-  run()
-    .then(require('@oclif/core/flush'))
-    .catch(require('@oclif/core/handle'));
+  run().then(require('@oclif/core/flush')).catch(require('@oclif/core/handle'));
 }
