@@ -1,8 +1,8 @@
 import { FastifyInstance } from 'fastify';
 import { Type } from '@sinclair/typebox';
-import DLMM, { BinLiquidity } from '@meteora-ag/dlmm';
+import { BinLiquidity } from '@meteora-ag/dlmm';
 import { MeteoraController } from '../meteora.controller';
-import { Cluster, PublicKey } from '@solana/web3.js';
+import { PublicKey } from '@solana/web3.js';
 import { DecimalUtil } from '@orca-so/common-sdk';
 import Decimal from 'decimal.js';
 
@@ -20,31 +20,30 @@ class PositionsOwnedController extends MeteoraController {
     const publicKey = address ? new PublicKey(address) : this.keypair.publicKey;
 
     try {
-      const dlmm = await DLMM.create(this.connection, new PublicKey(poolAddress), {
-        cluster: this.network as Cluster,
-      });
+      const dlmmPool = await this.getDlmmPool(poolAddress);
+      await dlmmPool.refetchStates();
 
-      const { activeBin, userPositions } = await dlmm.getPositionsByUserAndLbPair(publicKey);
+      const { activeBin, userPositions } = await dlmmPool.getPositionsByUserAndLbPair(publicKey);
 
       const adjustedUserPositions = userPositions.map((position) => {
         const adjustedTotalXAmount = DecimalUtil.adjustDecimals(
           new Decimal(position.positionData.totalXAmount.toString()),
-          dlmm.tokenX.decimal,
+          dlmmPool.tokenX.decimal,
         ).toString();
 
         const adjustedTotalYAmount = DecimalUtil.adjustDecimals(
           new Decimal(position.positionData.totalYAmount.toString()),
-          dlmm.tokenY.decimal,
+          dlmmPool.tokenY.decimal,
         ).toString();
 
         const adjustedFeeX = DecimalUtil.fromBN(
           position.positionData.feeX,
-          dlmm.tokenX.decimal,
+          dlmmPool.tokenX.decimal,
         ).toString();
 
         const adjustedFeeY = DecimalUtil.fromBN(
           position.positionData.feeY,
-          dlmm.tokenY.decimal,
+          dlmmPool.tokenY.decimal,
         ).toString();
 
         return {
@@ -70,7 +69,10 @@ class PositionsOwnedController extends MeteoraController {
   }
 }
 
-export default function getPositionsOwnedByRoute(fastify: FastifyInstance, folderName: string) {
+export default function getPositionsOwnedByRoute(
+  fastify: FastifyInstance,
+  folderName: string,
+): void {
   const controller = new PositionsOwnedController();
 
   fastify.get(`/${folderName}/positions-owned`, {
@@ -97,7 +99,7 @@ export default function getPositionsOwnedByRoute(fastify: FastifyInstance, folde
         return positions;
       } catch (error) {
         fastify.log.error(`Error fetching positions: ${error.message}`);
-        reply.status(500).send({ error: 'Failed to fetch positions' });
+        reply.status(500).send({ error: `Failed to fetch positions: ${error.message}` });
       }
     },
   });

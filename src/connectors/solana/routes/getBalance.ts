@@ -103,7 +103,7 @@ export default function getBalanceRoute(fastify: FastifyInstance, folderName: st
       fastify.log.info(`Getting token balances for address: ${address || 'user wallet'}`);
       try {
         const result = await controller.getBalance(address, symbols);
-        return result;
+        return JSON.parse(result);
       } catch (error) {
         fastify.log.error(error);
         reply.status(500).send({

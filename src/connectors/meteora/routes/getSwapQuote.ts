@@ -1,11 +1,9 @@
 import { FastifyInstance } from 'fastify';
 import { Type } from '@sinclair/typebox';
 import { DecimalUtil } from '@orca-so/common-sdk';
-import DLMM from '@meteora-ag/dlmm';
 import { MeteoraController } from '../meteora.controller';
 import { SolanaController } from '../../solana/solana.controller';
 import BN from 'bn.js';
-import { Cluster, PublicKey } from '@solana/web3.js';
 import Decimal from 'decimal.js';
 
 class GetSwapQuoteController extends MeteoraController {
@@ -28,9 +26,7 @@ class GetSwapQuoteController extends MeteoraController {
       throw new Error('Invalid token symbols');
     }
 
-    const dlmmPool = await DLMM.create(this.connection, new PublicKey(poolAddress), {
-      cluster: this.network as Cluster,
-    });
+    const dlmmPool = await this.getDlmmPool(poolAddress);
     await dlmmPool.refetchStates(); // Add this line to ensure we have the latest pool state
 
     const swapAmount = new BN(DecimalUtil.toBN(new Decimal(amount), inputToken.decimals));
@@ -40,7 +36,7 @@ class GetSwapQuoteController extends MeteoraController {
 
     const slippage = new BN(slippageBps || 100); // Default 1% slippage
 
-    const swapQuote = await dlmmPool.swapQuote(swapAmount, swapForY, slippage, binArrays);
+    const swapQuote = dlmmPool.swapQuote(swapAmount, swapForY, slippage, binArrays);
 
     return {
       estimatedAmountIn: DecimalUtil.fromBN(
@@ -53,7 +49,7 @@ class GetSwapQuoteController extends MeteoraController {
   }
 }
 
-export default function getSwapQuoteRoute(fastify: FastifyInstance, folderName: string) {
+export default function getSwapQuoteRoute(fastify: FastifyInstance, folderName: string): void {
   const controller = new GetSwapQuoteController();
 
   fastify.get(`/${folderName}/quote-swap`, {
@@ -75,7 +71,7 @@ export default function getSwapQuoteRoute(fastify: FastifyInstance, folderName: 
         }),
       },
     },
-    handler: async (request) => {
+    handler: async (request, reply) => {
       const { inputTokenSymbol, outputTokenSymbol, amount, poolAddress, slippageBps } =
         request.query as {
           inputTokenSymbol: string;
@@ -87,14 +83,19 @@ export default function getSwapQuoteRoute(fastify: FastifyInstance, folderName: 
       fastify.log.info(
         `Getting Meteora swap quote for ${inputTokenSymbol} to ${outputTokenSymbol}`,
       );
-      const quote = await controller.getSwapQuote(
-        inputTokenSymbol,
-        outputTokenSymbol,
-        amount,
-        poolAddress,
-        slippageBps,
-      );
-      return quote;
+      try {
+        const quote = await controller.getSwapQuote(
+          inputTokenSymbol,
+          outputTokenSymbol,
+          amount,
+          poolAddress,
+          slippageBps,
+        );
+        return quote;
+      } catch (error) {
+        fastify.log.error(`Error getting swap quote: ${error.message}`);
+        reply.status(500).send({ error: `Failed to get swap quote: ${error.message}` });
+      }
     },
   });
 }

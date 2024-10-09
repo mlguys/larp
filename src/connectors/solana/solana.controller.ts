@@ -1,4 +1,13 @@
-import { Connection, Keypair, clusterApiUrl, Cluster } from '@solana/web3.js';
+import {
+  Connection,
+  Keypair,
+  clusterApiUrl,
+  Cluster,
+  TransactionError,
+  Transaction,
+  ComputeBudgetProgram,
+  SignatureStatus,
+} from '@solana/web3.js';
 import fs from 'fs';
 import path from 'path';
 import { PublicKey } from '@solana/web3.js';
@@ -10,12 +19,18 @@ import { config } from 'dotenv';
 
 interface RequestPayload {
   method: string;
-  params: {
-    last_n_blocks: number;
-    account: string;
-  };
+  params: string[][];
   id: number;
   jsonrpc: string;
+}
+
+interface ResponseData {
+  jsonrpc: string;
+  result: Array<{
+    prioritizationFee: number;
+    slot: number;
+  }>;
+  id: number;
 }
 
 interface FeeEstimates {
@@ -23,29 +38,12 @@ interface FeeEstimates {
   high: number;
   low: number;
   medium: number;
-  percentiles: {
-    [key: string]: number;
-  };
-}
-
-interface ResponseData {
-  jsonrpc: string;
-  result: {
-    context: {
-      slot: number;
-    };
-    per_compute_unit: FeeEstimates;
-    per_transaction: FeeEstimates;
-  };
-  id: number;
 }
 
 interface EstimatePriorityFeesParams {
-  // The number of blocks to consider for the fee estimate
-  last_n_blocks?: number;
   // The program account to use for fetching the local estimate (e.g., Jupiter: JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4)
   account?: string;
-  // Your Add-on Endpoint (found in your QuickNode Dashboard - https://dashboard.quicknode.com/endpoints)
+  // rcp URL
   endpoint: string;
 }
 
@@ -223,42 +221,160 @@ export class SolanaController {
     return foundToken as Token;
   }
 
-  // This function is exclusive to quicknode node
-  // Source: https://www.quicknode.com/guides/solana-development/transactions/how-to-use-priority-fees
   async fetchEstimatePriorityFees({
-    last_n_blocks,
     account,
     endpoint,
-  }: EstimatePriorityFeesParams): Promise<ResponseData> {
-    // Only include params that are defined
-    const params: any = {};
-    if (last_n_blocks !== undefined) {
-      params.last_n_blocks = last_n_blocks;
-    }
-    if (account !== undefined) {
-      params.account = account;
-    }
+  }: EstimatePriorityFeesParams): Promise<FeeEstimates> {
+    try {
+      // Only include params that are defined
+      const params: string[][] = [];
+      if (account !== undefined) {
+        params.push([account]);
+      }
 
-    const payload: RequestPayload = {
-      method: 'qn_estimatePriorityFees',
-      params,
-      id: 1,
-      jsonrpc: '2.0',
-    };
+      const payload: RequestPayload = {
+        method: 'getRecentPrioritizationFees',
+        params: params,
+        id: 1,
+        jsonrpc: '2.0',
+      };
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        console.error(`HTTP error! status: ${response.status}`);
+        return { low: 0, medium: 0, high: 0, extreme: 8000 };
+      }
+
+      const data: ResponseData = await response.json();
+
+      // Process the response to categorize fees
+      const fees = data.result.map((item) => item.prioritizationFee);
+
+      // Filter out zero fees for calculations
+      const nonZeroFees = fees.filter((fee) => fee > 0);
+      nonZeroFees.sort((a, b) => a - b); // Sort non-zero fees in ascending order
+
+      // Default values if there are no non-zero fees
+      let low = 0,
+        medium = 0,
+        high = 0,
+        extreme = 0;
+
+      if (nonZeroFees.length > 0) {
+        const maxFee = nonZeroFees[nonZeroFees.length - 1];
+        low = Math.floor(maxFee * 0.25);
+        medium = Math.floor(maxFee * 0.5);
+        high = Math.floor(maxFee * 0.75);
+        extreme = Math.floor(maxFee);
+      }
+
+      return {
+        low,
+        medium,
+        high,
+        extreme,
+      };
+    } catch (error) {
+      console.error(
+        `Return default fees as failed to fetch estimate priority fees: ${error.message}`,
+      );
+      return { low: 2000, medium: 4000, high: 6000, extreme: 8000 };
+    }
+  }
+
+  public async confirmTransaction(
+    signature: string,
+    commitment: 'finalized' | 'confirmed' | 'processed' = 'confirmed',
+  ): Promise<boolean> {
+    try {
+      const payload = {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'getSignatureStatuses',
+        params: [
+          [signature],
+          {
+            searchTransactionHistory: true,
+          },
+        ],
+      };
+
+      const response = await fetch(this.connection.rpcEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      if (data.result && data.result.value && data.result.value[0]) {
+        const status: SignatureStatus = data.result.value[0];
+        if (status.err !== null) {
+          throw new Error(`Transaction failed with error: ${JSON.stringify(status.err)}`);
+        }
+        return status.confirmationStatus === commitment;
+      }
+
+      return false;
+    } catch (error) {
+      throw new Error(`Failed to confirm transaction: ${error.message}`);
+    }
+  }
+
+  async sendAndConfirmTransaction(
+    tx: Transaction,
+    accountToGetPriorityFees: string,
+    commitment: 'finalized' | 'confirmed' | 'processed' = 'confirmed',
+  ): Promise<string> {
+    // Get priority fees
+    const priorityFeesEstimate = await this.fetchEstimatePriorityFees({
+      account: accountToGetPriorityFees,
+      endpoint: this.connection.rpcEndpoint,
     });
 
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+    const priorityFeeInstruction = ComputeBudgetProgram.setComputeUnitPrice({
+      microLamports: priorityFeesEstimate.medium,
+    });
+
+    tx.instructions.push(priorityFeeInstruction);
+
+    let blockheight = await this.connection.getBlockHeight();
+    const lastValidBlockHeight = tx.lastValidBlockHeight;
+    let signature: string;
+
+    while (blockheight < lastValidBlockHeight) {
+      tx.sign(this.keypair);
+
+      signature = await this.connection.sendRawTransaction(tx.serialize(), {
+        skipPreflight: true,
+      });
+
+      // Sleep for 500ms
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      if (await this.confirmTransaction(signature, commitment)) {
+        return signature;
+      }
     }
 
-    const data: ResponseData = await response.json();
-    return data;
+    // Check if the transaction has been confirmed after exiting the loop
+    if (!(await this.confirmTransaction(signature, commitment))) {
+      throw new Error('Transaction could not be confirmed within the valid block height range');
+    }
+
+    return signature;
   }
 }

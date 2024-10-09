@@ -1,12 +1,5 @@
 import { MeteoraController } from '../meteora.controller';
-import DLMM from '@meteora-ag/dlmm';
-import {
-  Cluster,
-  ComputeBudgetProgram,
-  Keypair,
-  PublicKey,
-  sendAndConfirmTransaction,
-} from '@solana/web3.js';
+import { Keypair } from '@solana/web3.js';
 import { FastifyInstance } from 'fastify';
 import { Type } from '@sinclair/typebox';
 
@@ -17,36 +10,17 @@ class OpenPositionController extends MeteoraController {
     lowerPrice: number,
     upperPrice: number,
     poolAddress: string,
-  ): Promise<{ signature: string; positionAddress: string }> {
-    // TODO: if no pool address is provided => find pool by symbol
+  ): Promise<{ signature: string; positionAddress: string; sentSOL: number; fee: number }> {
     const newImbalancePosition = new Keypair();
-    const dlmmPoolPubkey = new PublicKey(poolAddress);
-    const dlmmPool = await DLMM.create(this.connection, dlmmPoolPubkey, {
-      cluster: this.network as Cluster,
-    });
+    const dlmmPool = await this.getDlmmPool(poolAddress);
 
     // Update pool state
     await dlmmPool.refetchStates();
 
     const lowerPricePerLamport = dlmmPool.toPricePerLamport(lowerPrice);
     const upperPricePerLamport = dlmmPool.toPricePerLamport(upperPrice);
-
     const minBinId = dlmmPool.getBinIdFromPrice(Number(lowerPricePerLamport), true) - 1;
-    console.log('Debug: minBinId:', minBinId);
-
     const maxBinId = dlmmPool.getBinIdFromPrice(Number(upperPricePerLamport), false) + 1;
-    console.log('Debug: maxBinId:', maxBinId);
-
-    // Get priority fees
-    const { result: priorityFeesEstimate } = await this.fetchEstimatePriorityFees({
-      last_n_blocks: 100,
-      account: poolAddress,
-      endpoint: this.connection.rpcEndpoint,
-    });
-
-    const priorityFeeInstruction = ComputeBudgetProgram.setComputeUnitPrice({
-      microLamports: priorityFeesEstimate.per_compute_unit.high,
-    });
 
     // Create Position
     const createPositionTx = await dlmmPool.createEmptyPosition({
@@ -56,28 +30,24 @@ class OpenPositionController extends MeteoraController {
       minBinId,
     });
 
-    createPositionTx.instructions.push(priorityFeeInstruction);
+    const signature = await this.sendAndConfirmTransaction(
+      createPositionTx,
+      dlmmPool.pubkey.toBase58(),
+    );
 
-    try {
-      const createImbalancePositionTxHash = await sendAndConfirmTransaction(
-        this.connection,
-        createPositionTx,
-        [this.keypair, newImbalancePosition],
-        { commitment: 'confirmed' },
-      );
-      console.log('🚀 ~ createImbalancePositionTxHash:', createImbalancePositionTxHash);
+    const { balanceChange, fee } = await this.extractTokenBalanceChangeAndFee(
+      signature,
+      (await this.getTokenBySymbol('SOL')).address,
+      dlmmPool.pubkey.toBase58(),
+    );
+    const sentSOL = Math.abs(balanceChange);
 
-      return {
-        signature: createImbalancePositionTxHash ? createImbalancePositionTxHash : '',
-        positionAddress: newImbalancePosition.publicKey.toBase58(),
-      };
-    } catch (error) {
-      console.log('🚀 ~ error:', JSON.parse(JSON.stringify(error)));
-      return {
-        signature: '',
-        positionAddress: '',
-      };
-    }
+    return {
+      signature,
+      positionAddress: newImbalancePosition.publicKey.toBase58(),
+      sentSOL,
+      fee,
+    };
   }
 }
 
@@ -99,10 +69,12 @@ export default function openPositionRoute(fastify: FastifyInstance, folderName: 
         200: Type.Object({
           signature: Type.String(),
           positionAddress: Type.String(),
+          sentSOL: Type.Number(),
+          fee: Type.Number(),
         }),
       },
     },
-    handler: async (request) => {
+    handler: async (request, reply) => {
       const { baseSymbol, quoteSymbol, lowerPrice, upperPrice, poolAddress } = request.body as {
         baseSymbol: string;
         quoteSymbol: string;
@@ -110,15 +82,20 @@ export default function openPositionRoute(fastify: FastifyInstance, folderName: 
         upperPrice: number;
         poolAddress: string;
       };
-      fastify.log.info(`Opening new Meteora position: ${baseSymbol}/${quoteSymbol}`);
-      const result = await controller.openPosition(
-        baseSymbol,
-        quoteSymbol,
-        lowerPrice,
-        upperPrice,
-        poolAddress,
-      );
-      return result;
+      try {
+        fastify.log.info(`Opening new Meteora position: ${baseSymbol}/${quoteSymbol}`);
+        const result = await controller.openPosition(
+          baseSymbol,
+          quoteSymbol,
+          lowerPrice,
+          upperPrice,
+          poolAddress,
+        );
+        return result;
+      } catch (error) {
+        fastify.log.error(`Error opening position: ${error.message}`);
+        reply.status(500).send({ error: `Failed to open position: ${error.message}` });
+      }
     },
   });
 }

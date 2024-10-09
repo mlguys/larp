@@ -1,16 +1,9 @@
 import { FastifyInstance } from 'fastify';
 import { Type } from '@sinclair/typebox';
-import {
-  Cluster,
-  ComputeBudgetProgram,
-  PublicKey,
-  sendAndConfirmTransaction,
-} from '@solana/web3.js';
-import DLMM from '@meteora-ag/dlmm';
+import { PublicKey } from '@solana/web3.js';
 import BN from 'bn.js';
 import { MeteoraController } from '../meteora.controller';
 import { SolanaController } from '../../solana/solana.controller';
-import { GetBalanceController } from '../../solana/routes/getBalance';
 
 class ExecuteSwapController extends MeteoraController {
   async executeSwap(
@@ -19,15 +12,12 @@ class ExecuteSwapController extends MeteoraController {
     amount: number,
     poolAddress: string,
     slippageBps?: number,
-    commitment: 'finalized' | 'confirmed' | 'processed' = 'finalized',
+    commitment: 'finalized' | 'confirmed' | 'processed' = 'confirmed',
   ): Promise<{
     signature: string;
-    inputTokenBefore: string;
-    inputTokenAfter: string;
-    outputTokenBefore: string;
-    outputTokenAfter: string;
-    totalInputSwapped: string;
-    totalOutputSwapped: string;
+    totalInputSwapped: number;
+    totalOutputSwapped: number;
+    fee: number;
   }> {
     const solanaController = new SolanaController();
     const inputToken = await solanaController.getTokenBySymbol(inputTokenSymbol);
@@ -37,9 +27,10 @@ class ExecuteSwapController extends MeteoraController {
       throw new Error('Invalid token symbols');
     }
 
-    const dlmmPool = await DLMM.create(this.connection, new PublicKey(poolAddress), {
-      cluster: this.network as Cluster,
-    });
+    // Initialize DLMM pool using MeteoraController
+    const dlmmPool = await this.getDlmmPool(poolAddress);
+    await dlmmPool.refetchStates();
+
     const swapAmount = new BN(amount * 10 ** inputToken.decimals);
     const swapForY = inputToken.address === dlmmPool.tokenX.publicKey.toBase58();
 
@@ -47,27 +38,7 @@ class ExecuteSwapController extends MeteoraController {
 
     const slippage = new BN(slippageBps || 100); // Default 1% slippage
 
-    const swapQuote = await dlmmPool.swapQuote(swapAmount, swapForY, slippage, binArrays);
-
-    const balanceController = new GetBalanceController();
-    const getBalance = async (tokenSymbol: string) => {
-      const balances = JSON.parse(await balanceController.getBalance());
-      const tokenBalance = balances.find((b) => b.name === tokenSymbol);
-      return tokenBalance ? tokenBalance.uiAmount : '0';
-    };
-
-    const inputTokenBefore = await getBalance(inputToken.symbol);
-    const outputTokenBefore = await getBalance(outputToken.symbol);
-
-    const { result: priorityFeesEstimate } = await this.fetchEstimatePriorityFees({
-      last_n_blocks: 100,
-      account: poolAddress,
-      endpoint: this.connection.rpcEndpoint,
-    });
-
-    const priorityFeeInstruction = ComputeBudgetProgram.setComputeUnitPrice({
-      microLamports: priorityFeesEstimate.per_compute_unit.high,
-    });
+    const swapQuote = dlmmPool.swapQuote(swapAmount, swapForY, slippage, binArrays);
 
     const swapTx = await dlmmPool.swap({
       inToken: new PublicKey(inputToken.address),
@@ -79,47 +50,33 @@ class ExecuteSwapController extends MeteoraController {
       binArraysPubkey: swapQuote.binArraysPubkey,
     });
 
-    swapTx.instructions.push(priorityFeeInstruction);
+    const signature = await this.sendAndConfirmTransaction(swapTx, poolAddress, commitment);
 
-    const signature = await sendAndConfirmTransaction(this.connection, swapTx, [this.keypair], {
-      commitment: commitment,
-      maxRetries: 3,
-    });
+    const { balanceChange: inputBalanceChange, fee } = await this.extractTokenBalanceChangeAndFee(
+      signature,
+      inputToken.address,
+      poolAddress,
+    );
 
-    const maxRetries = 10;
-    let retries = 0;
-    let inputTokenAfter, outputTokenAfter;
+    const { balanceChange: outputBalanceChange } = await this.extractTokenBalanceChangeAndFee(
+      signature,
+      outputToken.address,
+      poolAddress,
+    );
 
-    do {
-      inputTokenAfter = await getBalance(inputToken.symbol);
-      outputTokenAfter = await getBalance(outputToken.symbol);
-
-      if (inputTokenBefore !== inputTokenAfter || outputTokenBefore !== outputTokenAfter) {
-        break;
-      }
-
-      retries++;
-      if (retries < maxRetries) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
-      }
-    } while (retries < maxRetries);
-
-    const totalInputSwapped = parseFloat(inputTokenBefore) - parseFloat(inputTokenAfter);
-    const totalOutputSwapped = parseFloat(outputTokenAfter) - parseFloat(outputTokenBefore);
+    const totalInputSwapped = Math.abs(inputBalanceChange);
+    const totalOutputSwapped = Math.abs(outputBalanceChange);
 
     return {
       signature,
-      inputTokenBefore: `${inputTokenSymbol} (before swap): ${inputTokenBefore}`,
-      inputTokenAfter: `${inputTokenSymbol} (after swap): ${inputTokenAfter}`,
-      outputTokenBefore: `${outputTokenSymbol} (before swap): ${outputTokenBefore}`,
-      outputTokenAfter: `${outputTokenSymbol} (after swap): ${outputTokenAfter}`,
-      totalInputSwapped: `${inputTokenSymbol} swapped: ${totalInputSwapped}`,
-      totalOutputSwapped: `${outputTokenSymbol} swapped: ${totalOutputSwapped}`,
+      totalInputSwapped,
+      totalOutputSwapped,
+      fee,
     };
   }
 }
 
-export default function executeSwapRoute(fastify: FastifyInstance, folderName: string) {
+export default function executeSwapRoute(fastify: FastifyInstance, folderName: string): void {
   const controller = new ExecuteSwapController();
 
   fastify.post(`/${folderName}/execute-swap`, {
@@ -142,16 +99,13 @@ export default function executeSwapRoute(fastify: FastifyInstance, folderName: s
       response: {
         200: Type.Object({
           signature: Type.String(),
-          inputTokenBefore: Type.String(),
-          inputTokenAfter: Type.String(),
-          outputTokenBefore: Type.String(),
-          outputTokenAfter: Type.String(),
-          totalInputSwapped: Type.String(),
-          totalOutputSwapped: Type.String(),
+          totalInputSwapped: Type.Number(),
+          totalOutputSwapped: Type.Number(),
+          fee: Type.Number(),
         }),
       },
     },
-    handler: async (request) => {
+    handler: async (request, reply) => {
       const { inputTokenSymbol, outputTokenSymbol, amount, poolAddress, slippageBps, commitment } =
         request.body as {
           inputTokenSymbol: string;
@@ -161,16 +115,21 @@ export default function executeSwapRoute(fastify: FastifyInstance, folderName: s
           slippageBps?: number;
           commitment?: 'finalized' | 'confirmed' | 'processed';
         };
-      fastify.log.info(`Executing Meteora swap from ${inputTokenSymbol} to ${outputTokenSymbol}`);
-      const result = await controller.executeSwap(
-        inputTokenSymbol,
-        outputTokenSymbol,
-        amount,
-        poolAddress,
-        slippageBps,
-        commitment,
-      );
-      return result;
+      try {
+        fastify.log.info(`Executing Meteora swap from ${inputTokenSymbol} to ${outputTokenSymbol}`);
+        const result = await controller.executeSwap(
+          inputTokenSymbol,
+          outputTokenSymbol,
+          amount,
+          poolAddress,
+          slippageBps,
+          commitment,
+        );
+        return result;
+      } catch (error) {
+        fastify.log.error(`Error executing swap: ${error.message}`);
+        reply.status(500).send({ error: `Failed to execute swap: ${error.message}` });
+      }
     },
   });
 }

@@ -1,18 +1,15 @@
 import { FastifyInstance } from 'fastify';
 import { Type } from '@sinclair/typebox';
-import { TypeCompiler } from '@sinclair/typebox/compiler';
 import DLMM, { LbPosition, PositionInfo } from '@meteora-ag/dlmm';
 import { MeteoraController } from '../meteora.controller';
-import { Cluster, ComputeBudgetProgram, sendAndConfirmTransaction } from '@solana/web3.js';
-
-const CollectFeesResponse = Type.Object({
-  signature: Type.String(),
-});
 
 class CollectFeesController extends MeteoraController {
-  private collectFeesResponseValidator = TypeCompiler.Compile(CollectFeesResponse);
-
-  async collectFees(positionAddress: string): Promise<string> {
+  async collectFees(positionAddress: string): Promise<{
+    signature: string;
+    collectedFeeX: number;
+    collectedFeeY: number;
+    fee: number;
+  }> {
     // Find all positions by users
     const allPositions = await DLMM.getAllLbPairPositionsByUser(
       this.connection,
@@ -38,23 +35,10 @@ class CollectFeesController extends MeteoraController {
     }
 
     // Initialize DLMM pool
-    const dlmmPool = await DLMM.create(this.connection, matchingPositionInfo.publicKey, {
-      cluster: this.network as Cluster,
-    });
+    const dlmmPool = await this.getDlmmPool(matchingPositionInfo.publicKey.toBase58());
 
     // Update pool state
     await dlmmPool.refetchStates();
-
-    // Get priority fees
-    const { result: priorityFeesEstimate } = await this.fetchEstimatePriorityFees({
-      last_n_blocks: 100,
-      account: matchingPositionInfo.publicKey.toBase58(),
-      endpoint: this.connection.rpcEndpoint,
-    });
-
-    const priorityFeeInstruction = ComputeBudgetProgram.setComputeUnitPrice({
-      microLamports: priorityFeesEstimate.per_compute_unit.high,
-    });
 
     // Claim swap fees
     const claimSwapFeeTx = await dlmmPool.claimSwapFee({
@@ -62,52 +46,63 @@ class CollectFeesController extends MeteoraController {
       position: matchingLbPosition,
     });
 
-    claimSwapFeeTx.instructions.push(priorityFeeInstruction);
+    const signature = await this.sendAndConfirmTransaction(
+      claimSwapFeeTx,
+      dlmmPool.pubkey.toBase58(),
+    );
 
-    let signature: string;
-    try {
-      signature = await sendAndConfirmTransaction(this.connection, claimSwapFeeTx, [this.keypair], {
-        skipPreflight: false,
-        preflightCommitment: 'confirmed',
-        commitment: 'confirmed',
-      });
-      console.log('🚀 ~ claimSwapFeeTxHash:', signature);
-      console.log('Fees collected successfully');
-    } catch (error) {
-      console.error('Error collecting fees:', error);
-      throw error;
-    }
+    const { balanceChange: collectedFeeX, fee } = await this.extractTokenBalanceChangeAndFee(
+      signature,
+      dlmmPool.tokenX.publicKey.toBase58(),
+      dlmmPool.pubkey.toBase58(),
+    );
 
-    const response = { signature };
+    const { balanceChange: collectedFeeY } = await this.extractTokenBalanceChangeAndFee(
+      signature,
+      dlmmPool.tokenY.publicKey.toBase58(),
+      dlmmPool.pubkey.toBase58(),
+    );
 
-    // Validate the response object against the schema
-    if (!this.collectFeesResponseValidator.Check(response)) {
-      throw new Error('Collect fees response does not match the expected schema');
-    }
-
-    return JSON.stringify(response);
+    return {
+      signature,
+      collectedFeeX: Math.abs(collectedFeeX),
+      collectedFeeY: Math.abs(collectedFeeY),
+      fee,
+    };
   }
 }
 
-export default function collectFeesRoute(fastify: FastifyInstance, folderName: string) {
+export default function collectFeesRoute(fastify: FastifyInstance, folderName: string): void {
   const controller = new CollectFeesController();
 
-  fastify.post(`/${folderName}/collect-fees/:positionAddress`, {
+  fastify.post(`/${folderName}/collect-fees`, {
     schema: {
       tags: [folderName],
       description: 'Collect fees for a Meteora position',
-      params: Type.Object({
+      body: Type.Object({
         positionAddress: Type.String(),
       }),
       response: {
-        200: CollectFeesResponse,
+        200: Type.Object({
+          signature: Type.String(),
+          collectedFeeX: Type.Number(),
+          collectedFeeY: Type.Number(),
+          fee: Type.Number(),
+        }),
       },
     },
-    handler: async (request) => {
-      const { positionAddress } = request.params as { positionAddress: string };
-      fastify.log.info(`Collecting fees for Meteora position: ${positionAddress}`);
-      const result = await controller.collectFees(positionAddress);
-      return JSON.parse(result);
+    handler: async (request, reply) => {
+      const { positionAddress } = request.body as {
+        positionAddress: string;
+      };
+      try {
+        fastify.log.info(`Collecting fees for Meteora position: ${positionAddress}`);
+        const result = await controller.collectFees(positionAddress);
+        return result;
+      } catch (error) {
+        fastify.log.error(`Error collecting fees: ${error.message}`);
+        reply.status(500).send({ error: `Failed to collect fees: ${error.message}` });
+      }
     },
   });
 }

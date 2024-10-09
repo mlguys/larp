@@ -5,7 +5,6 @@ import DLMM, { LbPosition, PositionInfo } from '@meteora-ag/dlmm';
 import { MeteoraController } from '../meteora.controller';
 import { DecimalUtil } from '@orca-so/common-sdk';
 import Decimal from 'decimal.js';
-import { Cluster } from '@solana/web3.js';
 
 export const QuoteFeesResponse = Type.Object({
   tokenX: Type.Object({
@@ -47,9 +46,7 @@ class GetFeesQuoteController extends MeteoraController {
     }
 
     // Initialize DLMM pool
-    const dlmmPool = await DLMM.create(this.connection, matchingPositionInfo.publicKey, {
-      cluster: this.network as Cluster,
-    });
+    const dlmmPool = await this.getDlmmPool(matchingPositionInfo.publicKey.toBase58());
 
     // Update pool state
     await dlmmPool.refetchStates();
@@ -98,7 +95,7 @@ class GetFeesQuoteController extends MeteoraController {
   }
 }
 
-export default function getFeesQuoteRoute(fastify: FastifyInstance, folderName: string) {
+export default function getFeesQuoteRoute(fastify: FastifyInstance, folderName: string): void {
   const controller = new GetFeesQuoteController();
 
   fastify.get(`/${folderName}/quote-fees/:positionAddress`, {
@@ -112,11 +109,16 @@ export default function getFeesQuoteRoute(fastify: FastifyInstance, folderName: 
         200: QuoteFeesResponse,
       },
     },
-    handler: async (request) => {
+    handler: async (request, reply) => {
       const { positionAddress } = request.params as { positionAddress: string };
-      fastify.log.info(`Getting fees quote for Meteora position: ${positionAddress}`);
-      const result = await controller.getFeesQuote(positionAddress);
-      return JSON.parse(result);
+      try {
+        fastify.log.info(`Getting fees quote for Meteora position: ${positionAddress}`);
+        const result = await controller.getFeesQuote(positionAddress);
+        return JSON.parse(result);
+      } catch (error) {
+        fastify.log.error(`Error getting fees quote: ${error.message}`);
+        reply.status(500).send({ error: `Failed to get fees quote: ${error.message}` });
+      }
     },
   });
 }
