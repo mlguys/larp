@@ -225,7 +225,7 @@ export class SolanaController {
     account,
     endpoint,
   }: EstimatePriorityFeesParams): Promise<FeeEstimates> {
-    const DEFAULT_FEES = { low: 10000, medium: 20000, high: 30000, extreme: 40000 };
+    const DEFAULT_FEES = { low: 100000, medium: 200000, high: 300000, extreme: 400000 };
 
     try {
       // Only include params that are defined
@@ -267,7 +267,7 @@ export class SolanaController {
       let { low, medium, high, extreme } = DEFAULT_FEES;
 
       if (nonZeroFees.length > 0) {
-        const maxFee = nonZeroFees[nonZeroFees.length - 1];
+        const maxFee = Math.min(nonZeroFees[nonZeroFees.length - 1], 4000000); // Cap the max fee at 4000000
         low = Math.max(Math.floor(maxFee * 0.25), low);
         medium = Math.max(Math.floor(maxFee * 0.5), medium);
         high = Math.max(Math.floor(maxFee * 0.75), high);
@@ -397,27 +397,26 @@ export class SolanaController {
     });
 
     const priorityFeeInstruction = ComputeBudgetProgram.setComputeUnitPrice({
-      microLamports: priorityFeesEstimate.high,
+      microLamports: priorityFeesEstimate.medium,
     });
 
     tx.instructions.push(priorityFeeInstruction);
+    tx.sign(...signers);
 
-    let blockheight = await this.connection.getBlockHeight();
+    let blockheight = await this.connection.getBlockHeight({ commitment: 'confirmed' });
 
-    const lastValidBlockHeight = blockheight + 100; // Make sure the transaction not taking too much time
-    tx.lastValidBlockHeight = lastValidBlockHeight;
+    const lastValidBlockHeight = tx.lastValidBlockHeight;
 
     let signature: string;
 
     while (blockheight < lastValidBlockHeight) {
-      tx.sign(...signers);
-
       signature = await this.connection.sendRawTransaction(tx.serialize(), {
         skipPreflight: true,
+        maxRetries: 0,
       });
 
-      // Sleep for 500ms
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      // Sleep for 1s
+      await new Promise((resolve) => setTimeout(resolve, 1000));
 
       if (
         (await this.confirmTransaction(signature)) ||
@@ -426,7 +425,7 @@ export class SolanaController {
         return signature;
       }
 
-      blockheight = await this.connection.getBlockHeight();
+      blockheight = await this.connection.getBlockHeight({ commitment: 'confirmed' });
     }
 
     // Check if the transaction has been confirmed after exiting the loop
