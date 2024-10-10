@@ -75,6 +75,7 @@ class AddLiquidityController extends MeteoraController {
 
     const signature = await this.sendAndConfirmTransaction(
       addLiquidityTx,
+      [this.keypair],
       dlmmPool.pubkey.toBase58(),
     );
 

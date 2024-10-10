@@ -3,10 +3,10 @@ import {
   Keypair,
   clusterApiUrl,
   Cluster,
-  TransactionError,
   Transaction,
   ComputeBudgetProgram,
   SignatureStatus,
+  Signer,
 } from '@solana/web3.js';
 import fs from 'fs';
 import path from 'path';
@@ -84,7 +84,7 @@ export class SolanaController {
         ? rpcUrlOverride
         : clusterApiUrl(this.network as Cluster);
 
-    this.connection = new Connection(rpcUrl);
+    this.connection = new Connection(rpcUrl, { commitment: 'confirmed' });
 
     this.loadWallet();
     this.loadTokenList();
@@ -225,11 +225,14 @@ export class SolanaController {
     account,
     endpoint,
   }: EstimatePriorityFeesParams): Promise<FeeEstimates> {
+    const DEFAULT_FEES = { low: 10000, medium: 20000, high: 30000, extreme: 40000 };
+
     try {
       // Only include params that are defined
       const params: string[][] = [];
       if (account !== undefined) {
-        params.push([account]);
+        // Add accounts from https://triton.one/solana-prioritization-fees/ to track general fees
+        params.push(['GASeo1wEK3rWwep6fsAt212Jw9zAYguDY5qUwTnyZ4RH']);
       }
 
       const payload: RequestPayload = {
@@ -249,7 +252,7 @@ export class SolanaController {
 
       if (!response.ok) {
         console.error(`HTTP error! status: ${response.status}`);
-        return { low: 0, medium: 0, high: 0, extreme: 8000 };
+        return DEFAULT_FEES;
       }
 
       const data: ResponseData = await response.json();
@@ -261,18 +264,14 @@ export class SolanaController {
       const nonZeroFees = fees.filter((fee) => fee > 0);
       nonZeroFees.sort((a, b) => a - b); // Sort non-zero fees in ascending order
 
-      // Default values if there are no non-zero fees
-      let low = 0,
-        medium = 0,
-        high = 0,
-        extreme = 0;
+      let { low, medium, high, extreme } = DEFAULT_FEES;
 
       if (nonZeroFees.length > 0) {
         const maxFee = nonZeroFees[nonZeroFees.length - 1];
-        low = Math.floor(maxFee * 0.25);
-        medium = Math.floor(maxFee * 0.5);
-        high = Math.floor(maxFee * 0.75);
-        extreme = Math.floor(maxFee);
+        low = Math.max(Math.floor(maxFee * 0.25), low);
+        medium = Math.max(Math.floor(maxFee * 0.5), medium);
+        high = Math.max(Math.floor(maxFee * 0.75), high);
+        extreme = Math.max(Math.floor(maxFee), extreme);
       }
 
       return {
@@ -283,16 +282,13 @@ export class SolanaController {
       };
     } catch (error) {
       console.error(
-        `Return default fees as failed to fetch estimate priority fees: ${error.message}`,
+        `Return fallback fees as failed to fetch estimate priority fees: ${error.message}`,
       );
-      return { low: 2000, medium: 4000, high: 6000, extreme: 8000 };
+      return DEFAULT_FEES;
     }
   }
 
-  public async confirmTransaction(
-    signature: string,
-    commitment: 'finalized' | 'confirmed' | 'processed' = 'confirmed',
-  ): Promise<boolean> {
+  public async confirmTransaction(signature: string): Promise<boolean> {
     try {
       const payload = {
         jsonrpc: '2.0',
@@ -325,38 +321,96 @@ export class SolanaController {
         if (status.err !== null) {
           throw new Error(`Transaction failed with error: ${JSON.stringify(status.err)}`);
         }
-        return status.confirmationStatus === commitment;
+        const isConfirmed =
+          status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized';
+        return isConfirmed;
       }
 
       return false;
     } catch (error) {
+      console.error('Error confirming transaction:', error.message);
       throw new Error(`Failed to confirm transaction: ${error.message}`);
+    }
+  }
+
+  public async confirmTransactionByAddress(address: string, signature: string): Promise<boolean> {
+    try {
+      const payload = {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'getSignaturesForAddress',
+        params: [
+          address,
+          {
+            limit: 100, // Adjust the limit as needed
+            until: signature,
+          },
+        ],
+      };
+
+      const response = await fetch(this.connection.rpcEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      if (data.result) {
+        const transactionInfo = data.result.find((entry) => entry.signature === signature);
+
+        if (!transactionInfo) {
+          return false;
+        }
+
+        if (transactionInfo.err !== null) {
+          throw new Error(`Transaction failed with error: ${JSON.stringify(transactionInfo.err)}`);
+        }
+
+        const isConfirmed =
+          transactionInfo.confirmationStatus === 'confirmed' ||
+          transactionInfo.confirmationStatus === 'finalized';
+        return isConfirmed;
+      }
+
+      return false;
+    } catch (error) {
+      console.error('Error confirming transaction using signatures:', error.message);
+      throw new Error(`Failed to confirm transaction using signatures: ${error.message}`);
     }
   }
 
   async sendAndConfirmTransaction(
     tx: Transaction,
+    signers: Signer[] = [],
     accountToGetPriorityFees: string,
-    commitment: 'finalized' | 'confirmed' | 'processed' = 'confirmed',
   ): Promise<string> {
-    // Get priority fees
     const priorityFeesEstimate = await this.fetchEstimatePriorityFees({
       account: accountToGetPriorityFees,
       endpoint: this.connection.rpcEndpoint,
     });
 
     const priorityFeeInstruction = ComputeBudgetProgram.setComputeUnitPrice({
-      microLamports: priorityFeesEstimate.medium,
+      microLamports: priorityFeesEstimate.high,
     });
 
     tx.instructions.push(priorityFeeInstruction);
 
     let blockheight = await this.connection.getBlockHeight();
-    const lastValidBlockHeight = tx.lastValidBlockHeight;
+
+    const lastValidBlockHeight = blockheight + 100; // Make sure the transaction not taking too much time
+    tx.lastValidBlockHeight = lastValidBlockHeight;
+
     let signature: string;
 
     while (blockheight < lastValidBlockHeight) {
-      tx.sign(this.keypair);
+      tx.sign(...signers);
 
       signature = await this.connection.sendRawTransaction(tx.serialize(), {
         skipPreflight: true,
@@ -365,16 +419,24 @@ export class SolanaController {
       // Sleep for 500ms
       await new Promise((resolve) => setTimeout(resolve, 500));
 
-      if (await this.confirmTransaction(signature, commitment)) {
+      if (
+        (await this.confirmTransaction(signature)) ||
+        (await this.confirmTransactionByAddress(signers[0].publicKey.toBase58(), signature))
+      ) {
         return signature;
       }
+
+      blockheight = await this.connection.getBlockHeight();
     }
 
     // Check if the transaction has been confirmed after exiting the loop
-    if (!(await this.confirmTransaction(signature, commitment))) {
+    if (
+      !(await this.confirmTransaction(signature)) &&
+      !(await this.confirmTransactionByAddress(signers[0].publicKey.toBase58(), signature))
+    ) {
+      console.error('Transaction could not be confirmed within the valid block height range.');
       throw new Error('Transaction could not be confirmed within the valid block height range');
     }
-
     return signature;
   }
 }

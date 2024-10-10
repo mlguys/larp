@@ -48,6 +48,7 @@ class CollectFeesController extends MeteoraController {
 
     const signature = await this.sendAndConfirmTransaction(
       claimSwapFeeTx,
+      [this.keypair],
       dlmmPool.pubkey.toBase58(),
     );
 
@@ -63,10 +64,23 @@ class CollectFeesController extends MeteoraController {
       dlmmPool.pubkey.toBase58(),
     );
 
+    let adjustedCollectedFeeX = Math.abs(collectedFeeX);
+    let adjustedCollectedFeeY = Math.abs(collectedFeeY);
+
+    // Deduct the fee from collectedFeeX if tokenX is SOL
+    if (dlmmPool.tokenX.publicKey.toBase58() === 'So11111111111111111111111111111111111111112') {
+      adjustedCollectedFeeX -= fee;
+    }
+
+    // Deduct the fee from collectedFeeY if tokenY is SOL
+    if (dlmmPool.tokenY.publicKey.toBase58() === 'So11111111111111111111111111111111111111112') {
+      adjustedCollectedFeeY -= fee;
+    }
+
     return {
       signature,
-      collectedFeeX: Math.abs(collectedFeeX),
-      collectedFeeY: Math.abs(collectedFeeY),
+      collectedFeeX: adjustedCollectedFeeX,
+      collectedFeeY: adjustedCollectedFeeY,
       fee,
     };
   }

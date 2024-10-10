@@ -12,6 +12,7 @@ class OpenPositionController extends MeteoraController {
     poolAddress: string,
   ): Promise<{ signature: string; positionAddress: string; sentSOL: number; fee: number }> {
     const newImbalancePosition = new Keypair();
+
     const dlmmPool = await this.getDlmmPool(poolAddress);
 
     // Update pool state
@@ -19,6 +20,7 @@ class OpenPositionController extends MeteoraController {
 
     const lowerPricePerLamport = dlmmPool.toPricePerLamport(lowerPrice);
     const upperPricePerLamport = dlmmPool.toPricePerLamport(upperPrice);
+
     const minBinId = dlmmPool.getBinIdFromPrice(Number(lowerPricePerLamport), true) - 1;
     const maxBinId = dlmmPool.getBinIdFromPrice(Number(upperPricePerLamport), false) + 1;
 
@@ -32,15 +34,12 @@ class OpenPositionController extends MeteoraController {
 
     const signature = await this.sendAndConfirmTransaction(
       createPositionTx,
+      [this.keypair, newImbalancePosition],
       dlmmPool.pubkey.toBase58(),
     );
 
-    const { balanceChange, fee } = await this.extractTokenBalanceChangeAndFee(
-      signature,
-      (await this.getTokenBySymbol('SOL')).address,
-      dlmmPool.pubkey.toBase58(),
-    );
-    const sentSOL = Math.abs(balanceChange);
+    const { balanceChange, fee } = await this.extractAccountBalanceChangeAndFee(signature, 0);
+    const sentSOL = Math.abs(balanceChange - fee);
 
     return {
       signature,

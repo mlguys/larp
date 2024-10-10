@@ -1,11 +1,8 @@
 import { BN } from '@coral-xyz/anchor';
 import { MeteoraController } from '../meteora.controller';
 import DLMM, { LbPosition, PositionInfo } from '@meteora-ag/dlmm';
-import { Cluster, ComputeBudgetProgram, sendAndConfirmTransaction } from '@solana/web3.js';
 import { FastifyInstance } from 'fastify';
 import { Type } from '@sinclair/typebox';
-import { DecimalUtil } from '@orca-so/common-sdk';
-import Decimal from 'decimal.js';
 
 class RemoveLiquidityController extends MeteoraController {
   async removeLiquidity(
@@ -68,6 +65,7 @@ class RemoveLiquidityController extends MeteoraController {
 
     const signature = await this.sendAndConfirmTransaction(
       removeLiquidityTx,
+      [this.keypair],
       dlmmPool.pubkey.toBase58(),
     );
 
@@ -83,10 +81,23 @@ class RemoveLiquidityController extends MeteoraController {
       dlmmPool.pubkey.toBase58(),
     );
 
+    let adjustedTokenXRemovedAmount = Math.abs(tokenXRemovedAmount);
+    let adjustedTokenYRemovedAmount = Math.abs(tokenYRemovedAmount);
+
+    // Deduct the fee from tokenXRemovedAmount if tokenX is SOL
+    if (dlmmPool.tokenX.publicKey.toBase58() === 'So11111111111111111111111111111111111111112') {
+      adjustedTokenXRemovedAmount -= fee;
+    }
+
+    // Deduct the fee from tokenYRemovedAmount if tokenY is SOL
+    if (dlmmPool.tokenY.publicKey.toBase58() === 'So11111111111111111111111111111111111111112') {
+      adjustedTokenYRemovedAmount -= fee;
+    }
+
     return {
       signature,
-      tokenXRemovedAmount,
-      tokenYRemovedAmount,
+      tokenXRemovedAmount: adjustedTokenXRemovedAmount,
+      tokenYRemovedAmount: adjustedTokenYRemovedAmount,
       fee,
     };
   }

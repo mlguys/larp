@@ -47,19 +47,12 @@ class ClosePositionController extends MeteoraController {
 
     const signature = await this.sendAndConfirmTransaction(
       closePositionTx,
+      [this.keypair],
       dlmmPool.pubkey.toBase58(),
     );
 
-    const txDetails = await this.connection.getParsedTransaction(signature, {
-      commitment: 'confirmed',
-      maxSupportedTransactionVersion: 0,
-    });
-
-    const preAccountBalances = txDetails.meta?.preBalances || [0];
-    const postAccountBalances = txDetails.meta?.postBalances || [0];
-    const fee = (txDetails.meta?.fee || 0) / 1_000_000_000; // Convert lamports to SOL
-
-    const returnedSOL = (postAccountBalances[0] - preAccountBalances[0]) / 1_000_000_000; // Convert lamports to SOL;
+    const { balanceChange, fee } = await this.extractAccountBalanceChangeAndFee(signature, 0);
+    const returnedSOL = Math.abs(balanceChange);
 
     return {
       signature,

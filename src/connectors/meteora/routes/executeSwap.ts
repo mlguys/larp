@@ -12,7 +12,6 @@ class ExecuteSwapController extends MeteoraController {
     amount: number,
     poolAddress: string,
     slippageBps?: number,
-    commitment: 'finalized' | 'confirmed' | 'processed' = 'confirmed',
   ): Promise<{
     signature: string;
     totalInputSwapped: number;
@@ -50,7 +49,7 @@ class ExecuteSwapController extends MeteoraController {
       binArraysPubkey: swapQuote.binArraysPubkey,
     });
 
-    const signature = await this.sendAndConfirmTransaction(swapTx, poolAddress, commitment);
+    const signature = await this.sendAndConfirmTransaction(swapTx, [this.keypair], poolAddress);
 
     const { balanceChange: inputBalanceChange, fee } = await this.extractTokenBalanceChangeAndFee(
       signature,
@@ -65,7 +64,12 @@ class ExecuteSwapController extends MeteoraController {
     );
 
     const totalInputSwapped = Math.abs(inputBalanceChange);
-    const totalOutputSwapped = Math.abs(outputBalanceChange);
+    let totalOutputSwapped = Math.abs(outputBalanceChange);
+
+    // Deduct the fee from totalOutputSwapped if the output token is SOL
+    if (outputToken.symbol === 'SOL') {
+      totalOutputSwapped -= fee;
+    }
 
     return {
       signature,
@@ -89,12 +93,6 @@ export default function executeSwapRoute(fastify: FastifyInstance, folderName: s
         amount: Type.Number(),
         poolAddress: Type.String(),
         slippageBps: Type.Optional(Type.Number({ default: 100, minimum: 0, maximum: 10000 })),
-        commitment: Type.Optional(
-          Type.Union(
-            [Type.Literal('finalized'), Type.Literal('confirmed'), Type.Literal('processed')],
-            { default: 'finalized' },
-          ),
-        ),
       }),
       response: {
         200: Type.Object({
@@ -106,14 +104,13 @@ export default function executeSwapRoute(fastify: FastifyInstance, folderName: s
       },
     },
     handler: async (request, reply) => {
-      const { inputTokenSymbol, outputTokenSymbol, amount, poolAddress, slippageBps, commitment } =
+      const { inputTokenSymbol, outputTokenSymbol, amount, poolAddress, slippageBps } =
         request.body as {
           inputTokenSymbol: string;
           outputTokenSymbol: string;
           amount: number;
           poolAddress: string;
           slippageBps?: number;
-          commitment?: 'finalized' | 'confirmed' | 'processed';
         };
       try {
         fastify.log.info(`Executing Meteora swap from ${inputTokenSymbol} to ${outputTokenSymbol}`);
@@ -123,7 +120,6 @@ export default function executeSwapRoute(fastify: FastifyInstance, folderName: s
           amount,
           poolAddress,
           slippageBps,
-          commitment,
         );
         return result;
       } catch (error) {
