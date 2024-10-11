@@ -397,7 +397,7 @@ export class SolanaController {
     });
 
     const priorityFeeInstruction = ComputeBudgetProgram.setComputeUnitPrice({
-      microLamports: priorityFeesEstimate.medium,
+      microLamports: priorityFeesEstimate.high,
     });
 
     tx.instructions.push(priorityFeeInstruction);
@@ -415,8 +415,8 @@ export class SolanaController {
         maxRetries: 0,
       });
 
-      // Sleep for 1s
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      // Sleep for 500ms
+      await new Promise((resolve) => setTimeout(resolve, 500));
 
       if (
         (await this.confirmTransaction(signature)) ||

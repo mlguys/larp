@@ -46,6 +46,20 @@ class PositionsOwnedController extends MeteoraController {
           dlmmPool.tokenY.decimal,
         ).toString();
 
+        const adjustlastUpdatedAt = DecimalUtil.fromBN(
+          position.positionData.lastUpdatedAt,
+        ).toString();
+
+        const adjustedRewardOne = DecimalUtil.fromBN(
+          position.positionData.rewardOne,
+          dlmmPool.tokenX.decimal,
+        ).toString();
+
+        const adjustedRewardTwo = DecimalUtil.fromBN(
+          position.positionData.rewardTwo,
+          dlmmPool.tokenY.decimal,
+        ).toString();
+
         return {
           ...position,
           positionData: {
@@ -54,6 +68,9 @@ class PositionsOwnedController extends MeteoraController {
             totalYAmount: adjustedTotalYAmount,
             feeX: adjustedFeeX,
             feeY: adjustedFeeY,
+            rewardOne: adjustedRewardOne,
+            rewardTwo: adjustedRewardTwo,
+            lastUpdatedAt: adjustlastUpdatedAt,
           },
         };
       });
