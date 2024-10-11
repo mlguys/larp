@@ -225,7 +225,7 @@ export class SolanaController {
     account,
     endpoint,
   }: EstimatePriorityFeesParams): Promise<FeeEstimates> {
-    const DEFAULT_FEES = { low: 100000, medium: 200000, high: 300000, extreme: 400000 };
+    const DEFAULT_FEES = { low: 50000, medium: 100000, high: 150000, extreme: 200000 };
 
     try {
       // Only include params that are defined
