@@ -32,11 +32,10 @@ class OpenPositionController extends MeteoraController {
       minBinId,
     });
 
-    const signature = await this.sendAndConfirmTransaction(
-      createPositionTx,
-      [this.keypair, newImbalancePosition],
-      dlmmPool.pubkey.toBase58(),
-    );
+    const signature = await this.sendAndConfirmTransaction(createPositionTx, [
+      this.keypair,
+      newImbalancePosition,
+    ]);
 
     const { balanceChange, fee } = await this.extractAccountBalanceChangeAndFee(signature, 0);
     const sentSOL = Math.abs(balanceChange - fee);

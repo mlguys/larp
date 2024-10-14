@@ -46,11 +46,7 @@ class CollectFeesController extends MeteoraController {
       position: matchingLbPosition,
     });
 
-    const signature = await this.sendAndConfirmTransaction(
-      claimSwapFeeTx,
-      [this.keypair],
-      dlmmPool.pubkey.toBase58(),
-    );
+    const signature = await this.sendAndConfirmTransaction(claimSwapFeeTx, [this.keypair]);
 
     const { balanceChange: collectedFeeX, fee } = await this.extractTokenBalanceChangeAndFee(
       signature,

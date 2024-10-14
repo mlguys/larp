@@ -63,11 +63,7 @@ class RemoveLiquidityController extends MeteoraController {
       );
     }
 
-    const signature = await this.sendAndConfirmTransaction(
-      removeLiquidityTx,
-      [this.keypair],
-      dlmmPool.pubkey.toBase58(),
-    );
+    const signature = await this.sendAndConfirmTransaction(removeLiquidityTx, [this.keypair]);
 
     const { balanceChange: tokenXRemovedAmount, fee } = await this.extractTokenBalanceChangeAndFee(
       signature,

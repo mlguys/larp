@@ -73,11 +73,7 @@ class AddLiquidityController extends MeteoraController {
       slippage: slippagePct ? slippagePct : MAX_ACTIVE_BIN_SLIPPAGE,
     });
 
-    const signature = await this.sendAndConfirmTransaction(
-      addLiquidityTx,
-      [this.keypair],
-      dlmmPool.pubkey.toBase58(),
-    );
+    const signature = await this.sendAndConfirmTransaction(addLiquidityTx, [this.keypair]);
 
     const { balanceChange: tokenXAddedAmount, fee } = await this.extractTokenBalanceChangeAndFee(
       signature,

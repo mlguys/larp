@@ -49,27 +49,38 @@ class ExecuteSwapController extends MeteoraController {
       binArraysPubkey: swapQuote.binArraysPubkey,
     });
 
-    const signature = await this.sendAndConfirmTransaction(swapTx, [this.keypair], poolAddress);
+    const signature = await this.sendAndConfirmTransaction(swapTx, [this.keypair]);
 
-    const { balanceChange: inputBalanceChange, fee } = await this.extractTokenBalanceChangeAndFee(
-      signature,
-      inputToken.address,
-      poolAddress,
-    );
+    let inputBalanceChange: number, outputBalanceChange: number, fee: number;
 
-    const { balanceChange: outputBalanceChange } = await this.extractTokenBalanceChangeAndFee(
-      signature,
-      outputToken.address,
-      poolAddress,
-    );
+    if (inputToken.symbol === 'SOL') {
+      ({ balanceChange: inputBalanceChange, fee } = await this.extractAccountBalanceChangeAndFee(
+        signature,
+        0,
+      ));
+    } else {
+      ({ balanceChange: inputBalanceChange, fee } = await this.extractTokenBalanceChangeAndFee(
+        signature,
+        inputToken.address,
+        this.keypair.publicKey.toBase58(),
+      ));
+    }
+
+    if (outputToken.symbol === 'SOL') {
+      ({ balanceChange: outputBalanceChange } = await this.extractAccountBalanceChangeAndFee(
+        signature,
+        0,
+      ));
+    } else {
+      ({ balanceChange: outputBalanceChange } = await this.extractTokenBalanceChangeAndFee(
+        signature,
+        outputToken.address,
+        this.keypair.publicKey.toBase58(),
+      ));
+    }
 
     const totalInputSwapped = Math.abs(inputBalanceChange);
-    let totalOutputSwapped = Math.abs(outputBalanceChange);
-
-    // Deduct the fee from totalOutputSwapped if the output token is SOL
-    if (outputToken.symbol === 'SOL') {
-      totalOutputSwapped -= fee;
-    }
+    const totalOutputSwapped = Math.abs(outputBalanceChange);
 
     return {
       signature,
